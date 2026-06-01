@@ -155,10 +155,10 @@ st.markdown(STYLES, unsafe_allow_html=True)
 def _defaults():
     """Valeurs par défaut persistées dans st.session_state — AUCUN st.secrets."""
     return {
-        "df": pd.DataFrame(),
-        "failed": [],
-        "sent_wa": [],
-        "col_map": {},
+        "df": pd.DataFrame(),                          # contacts
+        "failed": [],                                    # liste dicts {index,nom,numero,matricule}
+        "sent_wa": [],                                   # indexes envoyés WhatsApp avec succès
+        "col_map": {},                                   # mapping colonnes détectées
         "wa_msg": "Bonjour {nom}, nous avons une offre spéciale pour vous ! Contactez-nous au plus vite.",
         "sms_msg": "Bonjour {nom}, offre spéciale ! Répondez vite.",
         "smtp_server": "smtp.gmail.com",
@@ -167,10 +167,10 @@ def _defaults():
         "smtp_pass": "",
         "email_subject": "",
         "email_body": "",
-        "inverted": True,
-        "anti_ban": True,
-        "anti_ban_intervals": [7, 18, 30, 46],
-        "wa_prefill": True,
+        "inverted": True,                               # traitement inversé par défaut
+        "anti_ban": True,                                # timer anti-ban activé
+        "anti_ban_intervals": [7, 18, 30, 46],          # intervalles aléatoires (secondes)
+        "wa_prefill": True,                              # message pré-rempli dans WhatsApp
     }
 
 for k, v in _defaults().items():
@@ -189,7 +189,7 @@ def clean_phone(raw):
     if s.startswith("+"):
         s = s[1:]
     if s.startswith("0"):
-        s = "243" + s[1:]
+        s = "243" + s[1:]          # RDC par défaut — modifiez si besoin
     return s
 
 
@@ -207,6 +207,7 @@ def detect_columns(df):
             if col.strip().lower() in words:
                 mapping[key] = col
                 break
+    # Fallback positionnel
     cols = list(df.columns)
     if "nom" not in mapping and len(cols) >= 1:
         mapping["nom"] = cols[0]
@@ -387,6 +388,7 @@ def page_dashboard():
           </div>
         </div>""", unsafe_allow_html=True)
 
+    # Guide rapide
     st.markdown("""<div class="card"><div class="card-title">🚀 Guide Rapide</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px">
       <div style="padding:11px;background:#f0fff4;border-radius:10px;border-left:4px solid #25D366">
@@ -399,6 +401,7 @@ def page_dashboard():
         <strong>4. Retargeting</strong><br><span style="font-size:.84rem;color:#555">Marquez les échecs → SMS ou appel</span></div>
     </div></div>""", unsafe_allow_html=True)
 
+    # Options actives
     opts = []
     if st.session_state.inverted:
         opts.append("🔄 Traitement inversé")
@@ -428,6 +431,7 @@ def page_contacts():
         <p>Importez, visualisez et gérez votre liste</p>
     </div>""", unsafe_allow_html=True)
 
+    # ---- Import ----
     ci1, ci2 = st.columns([2, 1])
     with ci1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -490,6 +494,7 @@ def page_contacts():
 
     st.markdown(f"---\n### 📊 Liste des Contacts ({len(df)})")
 
+    # Recherche & filtre
     sc1, sc2 = st.columns([3, 1])
     search = sc1.text_input("🔍 Rechercher", key="_search", placeholder="Nom ou numéro…")
     filt   = sc2.selectbox("Filtrer", ["Tous", "Actif", "Envoyé", "Sans WhatsApp"], key="_filt")
@@ -507,6 +512,7 @@ def page_contacts():
     elif filt == "Actif":
         view = view[~view.index.isin(fidx)]
 
+    # ---- Affichage ligne par ligne ----
     for idx, row in view.iterrows():
         nom  = val(row, "nom")
         num  = val(row, "numero")
@@ -535,8 +541,10 @@ def page_contacts():
           <div>{badge}</div>
         </div>""", unsafe_allow_html=True)
 
+        # --- Boutons d'action ---
         a1, a2, a3, a4, a5 = st.columns(5)
 
+        # WhatsApp (avec message pré-rempli si activé)
         with a1:
             msg = st.session_state.wa_msg.replace("{nom}", nom).replace("{matricule}", mat)
             wurl = wa_link(ncl, msg)
@@ -544,6 +552,7 @@ def page_contacts():
                 f'<a href="{wurl}" target="_blank" rel="noopener" class="hbtn hbtn-wa">💬 WhatsApp</a>',
                 unsafe_allow_html=True)
 
+        # Marquer envoyé
         with a2:
             if not is_s and not is_f:
                 if st.button("✅ Envoyé", key=f"sent_{idx}"):
@@ -551,6 +560,7 @@ def page_contacts():
                         st.session_state.sent_wa.append(idx)
                     st.rerun()
 
+        # Marquer / Restaurer
         with a3:
             if not is_f:
                 if st.button("⚠️ Sans WA", key=f"fail_{idx}"):
@@ -563,12 +573,14 @@ def page_contacts():
                     st.session_state.failed = [c for c in st.session_state.failed if c["index"] != idx]
                     st.rerun()
 
+        # SMS
         with a4:
             if is_f:
                 st.markdown(
                     '<a href="https://messages.google.com/web/" target="_blank" rel="noopener" class="hbtn hbtn-sms">📱 SMS</a>',
                     unsafe_allow_html=True)
 
+        # Appel
         with a5:
             st.markdown(
                 f'<a href="tel:{num}" class="hbtn hbtn-call">📞 Appeler</a>',
@@ -590,6 +602,7 @@ def page_whatsapp():
         return
     cm = st.session_state.col_map
 
+    # ---- Message ----
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### ✍️ Message de Campagne")
     st.markdown("Variables : **{nom}** · **{matricule}** · **{numero}**")
@@ -607,6 +620,7 @@ def page_whatsapp():
         st.info(preview[:250] + ("…" if len(preview) > 250 else ""))
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ---- Options campagne ----
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### ⚙️ Options de Campagne")
     oc1, oc2, oc3 = st.columns(3)
@@ -618,10 +632,12 @@ def page_whatsapp():
         st.markdown(f"📝 **Message pré-rempli** : {'✅ Activé' if st.session_state.wa_prefill else '❌ Désactivé'}")
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ---- Contacts actifs ----
     fidx = {c["index"] for c in st.session_state.failed}
     sidx = set(st.session_state.sent_wa)
     active = df[~df.index.isin(fidx)]
 
+    # Traitement inversé : bas → haut
     if st.session_state.inverted:
         active = active.iloc[::-1]
         st.markdown(f"---\n### 📨 Contacts Actifs — Ordre Inversé ({len(active)})")
@@ -633,6 +649,7 @@ def page_whatsapp():
         st.info("Tous les contacts sont marqués Sans WhatsApp.")
         return
 
+    # Compteur progression
     pending = [idx for idx in active.index if idx not in sidx]
     already_sent = [idx for idx in active.index if idx in sidx]
 
@@ -640,6 +657,7 @@ def page_whatsapp():
     pc1.markdown(stat_card(len(pending), "En Attente", "orange"), unsafe_allow_html=True)
     pc2.markdown(stat_card(len(already_sent), "Déjà Envoyés", "green"), unsafe_allow_html=True)
 
+    # Copier tous
     all_msgs = []
     for idx, row in active.iterrows():
         nom = val(row, "nom"); mat = val(row, "matricule"); num = val(row, "numero")
@@ -650,6 +668,7 @@ def page_whatsapp():
     st.markdown(copy_btn(full, "📋 Copier TOUS les messages", "all_wa"), unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # Chaque contact
     for idx, row in active.iterrows():
         nom = val(row, "nom"); num = val(row, "numero"); mat = val(row, "matricule")
         ncl = clean_phone(num)
@@ -676,6 +695,7 @@ def page_whatsapp():
                 st.markdown(copy_btn(msg, "📋 Copier le message", f"wap_{idx}"), unsafe_allow_html=True)
                 st.markdown("<br>", unsafe_allow_html=True)
 
+                # Boutons de statut
                 bc1, bc2 = st.columns(2)
                 with bc1:
                     if not is_sent:
@@ -692,6 +712,7 @@ def page_whatsapp():
                             st.session_state.sent_wa.remove(idx)
                         st.rerun()
 
+    # ---- Timer anti-ban ----
     if st.session_state.anti_ban and pending:
         st.markdown("---")
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -732,6 +753,7 @@ def page_sms():
         st.warning("⚠️ Chargez d'abord vos contacts.")
         return
 
+    # ---- Message SMS ----
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### ✍️ Message SMS")
     st.markdown("Variables : **{nom}** · **{matricule}**")
@@ -746,6 +768,7 @@ def page_sms():
                 unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ---- Contacts en échec ----
     failed = st.session_state.failed
     st.markdown(f"---\n### 📨 Contacts Sans WhatsApp ({len(failed)})")
 
@@ -785,6 +808,7 @@ def page_email():
         <p>Envoi via SMTP · Gmail ou Outlook Professionnel</p>
     </div>""", unsafe_allow_html=True)
 
+    # ---- Config SMTP ----
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### ⚙️ Configuration SMTP")
     s1, s2 = st.columns(2)
@@ -811,6 +835,7 @@ def page_email():
     </div>""", unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ---- Rédaction ----
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### ✍️ Rédiger l'E-mail")
     subj = st.text_input("Objet :", value=st.session_state.email_subject, key="_em_subj")
@@ -819,6 +844,7 @@ def page_email():
     st.session_state.email_body   = body
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ---- Destinataires ----
     df = st.session_state.df
     cm = st.session_state.col_map
     email_col = cm.get("email")
@@ -826,6 +852,7 @@ def page_email():
         st.warning("⚠️ Chargez d'abord vos contacts.")
         return
     if not email_col:
+        # Détection large
         for col in df.columns:
             if col.strip().lower() in ["email", "e-mail", "courriel", "mail"]:
                 email_col = col; cm["email"] = col; st.session_state.col_map = cm; break
@@ -847,6 +874,7 @@ def page_email():
             st.markdown("---")
             st.markdown(body)
 
+    # Envoi
     bc1, bc2 = st.columns(2)
     with bc1:
         if st.button("📤 Envoyer à tous", key="_em_send", type="primary"):
@@ -919,6 +947,7 @@ def page_retarget():
             <p>Tous actifs ou pas encore de contacts marqués.</p></div>""", unsafe_allow_html=True)
         return
 
+    # Stats
     df = st.session_state.df
     cm = st.session_state.col_map
     ecol = cm.get("email")
@@ -935,6 +964,7 @@ def page_retarget():
     t2.markdown(stat_card(email_cnt, "Avec Email", "orange"), unsafe_allow_html=True)
     t3.markdown(stat_card(len(failed)-email_cnt, "SMS / Appel", "blue"), unsafe_allow_html=True)
 
+    # ---- Zone texte brut ----
     st.markdown("---")
     st.markdown('<div class="card retarget-zone">', unsafe_allow_html=True)
     st.markdown("### 📋 Liste Brute — Sélectionnable et Copiable")
@@ -949,6 +979,7 @@ def page_retarget():
     st.markdown(copy_btn(raw, "📋 Copier toute la liste", "ret_all"), unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ---- Actions rapides ----
     st.markdown("---")
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### 🚀 Actions Rapides")
@@ -986,6 +1017,7 @@ def page_retarget():
 
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ---- Tableau détaillé ----
     st.markdown("---")
     st.markdown("### 📊 Tableau Détaillé")
     fdf = pd.DataFrame([{
@@ -994,6 +1026,7 @@ def page_retarget():
     } for c in failed])
     st.dataframe(fdf, use_container_width=True, hide_index=True)
 
+    # Export CSV
     csv_b64 = base64.b64encode(fdf.to_csv(index=False).encode()).decode()
     st.markdown(f"""
     <a href="data:file/csv;base64,{csv_b64}" download="contacts_echec.csv"
@@ -1001,6 +1034,7 @@ def page_retarget():
               border-radius:8px;text-decoration:none;font-weight:600">💾 Exporter en CSV</a>""",
        unsafe_allow_html=True)
 
+    # Vider
     st.markdown("---")
     if st.button("🗑️ Vider la liste des contacts en échec", key="_clear_fail"):
         st.session_state.failed = []

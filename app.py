@@ -1,8 +1,12 @@
 """
 =============================================================
-  GESTIONNAIRE DE CAMPAGNE v2.0
+  GESTIONNAIRE DE CAMPAGNE v3.0
   Semi-manuel · Sécurisé · Aucun robot
   Déploiement Render via GitHub
+  - WhatsApp avec message pré-rempli (wa.me?text=)
+  - Timer anti-ban (intervalles aléatoires)
+  - Traitement inversé (bas → haut)
+  - Aucun st.secrets (valeurs en dur)
 =============================================================
 """
 
@@ -14,6 +18,8 @@ from email.mime.multipart import MIMEMultipart
 import re
 import base64
 import time
+import random
+from urllib.parse import quote
 
 # ============================================================
 # CONFIGURATION DE LA PAGE
@@ -36,6 +42,7 @@ STYLES = """
     --danger: #e74c3c; --danger-dark: #c0392b;
     --info: #3498db;  --sms: #4285F4;
     --email: #EA4335; --call: #27ae60;
+    --timer: #f39c12;
 }
 .stApp { background: linear-gradient(135deg,#f5f7fa 0%,#e4edf5 100%); }
 
@@ -84,6 +91,7 @@ STYLES = """
 .hbtn-sms   { background:var(--sms); }
 .hbtn-call  { background:var(--call); }
 .hbtn-email { background:var(--email); }
+.hbtn-timer { background:var(--timer); }
 
 /* ---------- Badges ---------- */
 .badge {
@@ -92,6 +100,7 @@ STYLES = """
 }
 .badge-pending { background:#fef3cd; color:#856404; }
 .badge-failed  { background:#f8d7da; color:#721c24; }
+.badge-sent    { background:#d4edda; color:#155724; }
 
 /* ---------- Ligne contact ---------- */
 .crow {
@@ -114,6 +123,18 @@ STYLES = """
     border-radius:12px; padding:20px;
 }
 
+/* ---------- Timer anti-ban ---------- */
+.timer-box {
+    background:linear-gradient(135deg,#fff8e1,#fff3cd);
+    border:2px solid var(--timer); border-radius:12px;
+    padding:16px; text-align:center; margin:10px 0;
+}
+.timer-num {
+    font-size:2.4rem; font-weight:800; color:#e67e22;
+    font-variant-numeric:tabular-nums;
+}
+.timer-label { font-size:.88rem; color:#7f6a2e; margin-top:4px; }
+
 /* ---------- Compteur SMS ---------- */
 .cnt { font-size:.85rem; padding:4px 0; font-weight:600; }
 .cnt.ok   { color:#27ae60; }
@@ -129,13 +150,14 @@ st.markdown(STYLES, unsafe_allow_html=True)
 
 
 # ============================================================
-# INITIALISATION SESSION STATE (SANS st.secrets)
+# INITIALISATION SESSION STATE
 # ============================================================
 def _defaults():
-    """Valeurs par défaut persistées dans st.session_state."""
+    """Valeurs par défaut persistées dans st.session_state — AUCUN st.secrets."""
     return {
         "df": pd.DataFrame(),
         "failed": [],
+        "sent_wa": [],
         "col_map": {},
         "wa_msg": "Bonjour {nom}, nous avons une offre spéciale pour vous ! Contactez-nous au plus vite.",
         "sms_msg": "Bonjour {nom}, offre spéciale ! Répondez vite.",
@@ -145,6 +167,10 @@ def _defaults():
         "smtp_pass": "",
         "email_subject": "",
         "email_body": "",
+        "inverted": True,
+        "anti_ban": True,
+        "anti_ban_intervals": [7, 18, 30, 46],
+        "wa_prefill": True,
     }
 
 for k, v in _defaults().items():
@@ -230,6 +256,20 @@ def stat_card(n, label, cls="purple"):
     return f'<div class="stat {cls}"><div class="stat-num">{n}</div><div class="stat-lbl">{label}</div></div>'
 
 
+def wa_link(ncl, msg=""):
+    """Génère le lien wa.me avec ou sans message pré-rempli."""
+    if st.session_state.wa_prefill and msg:
+        encoded = quote(msg)
+        return f"https://wa.me/{ncl}?text={encoded}"
+    return f"https://wa.me/{ncl}"
+
+
+def random_interval():
+    """Retourne un intervalle aléatoire anti-ban en secondes."""
+    intervals = st.session_state.anti_ban_intervals
+    return random.choice(intervals) if intervals else 0
+
+
 # ============================================================
 # SIDEBAR — Navigation + import rapide
 # ============================================================
@@ -267,17 +307,43 @@ def sidebar():
                 df.columns = [c.strip() for c in df.columns]
                 st.session_state.df = df
                 st.session_state.failed = []
+                st.session_state.sent_wa = []
                 st.session_state.col_map = detect_columns(df)
                 st.success(f"✅ {len(df)} contacts chargés !")
             except Exception as exc:
                 st.error(f"Erreur : {exc}")
 
         st.markdown("<hr style='border-color:#333'>", unsafe_allow_html=True)
-        st.markdown("### ⚙️ État")
+
+        # Options de campagne
+        st.markdown("### ⚙️ Options Campagne")
+        inv = st.checkbox("🔄 Traitement inversé (bas→haut)", value=st.session_state.inverted, key="_inv_opt")
+        st.session_state.inverted = inv
+
+        ab = st.checkbox("⏱️ Timer anti-ban", value=st.session_state.anti_ban, key="_ab_opt")
+        st.session_state.anti_ban = ab
+
+        pf = st.checkbox("📝 Message WA pré-rempli", value=st.session_state.wa_prefill, key="_pf_opt")
+        st.session_state.wa_prefill = pf
+
+        if ab:
+            iv = st.text_input("Intervalles (s) séparés par virgule",
+                               value=",".join(str(x) for x in st.session_state.anti_ban_intervals),
+                               key="_iv_input",
+                               help="Ex: 7,18,30,46")
+            try:
+                st.session_state.anti_ban_intervals = [int(x.strip()) for x in iv.split(",") if x.strip()]
+            except ValueError:
+                st.warning("Format invalide. Utilisez: 7,18,30,46")
+
+        st.markdown("<hr style='border-color:#333'>", unsafe_allow_html=True)
+        st.markdown("### 📊 État")
         n = len(st.session_state.df)
         f = len(st.session_state.failed)
+        s = len(st.session_state.sent_wa)
         smtp_ok = bool(st.session_state.smtp_user)
         st.markdown(f"📋 Contacts : **{n}**")
+        st.markdown(f"✅ WA Envoyés : **{s}**")
         st.markdown(f"⚠️ Échecs : **{f}**")
         st.markdown(f"📧 SMTP : {'✅' if smtp_ok else '❌'}")
 
@@ -293,6 +359,7 @@ def page_dashboard():
     df = st.session_state.df
     total = len(df)
     fail  = len(st.session_state.failed)
+    sent  = len(st.session_state.sent_wa)
     ok    = total - fail if total else 0
     pct   = round(ok / total * 100, 1) if total else 0
 
@@ -301,11 +368,12 @@ def page_dashboard():
         <p>Semi-manuel · Sécurisé · Aucun robot · Conforme WhatsApp</p>
     </div>""", unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.markdown(stat_card(total, "Total Contacts"), unsafe_allow_html=True)
-    c2.markdown(stat_card(ok, "Contacts Actifs", "green"), unsafe_allow_html=True)
-    c3.markdown(stat_card(fail, "Sans WhatsApp", "red"), unsafe_allow_html=True)
-    c4.markdown(stat_card(f"{pct}%", "Taux Réussite", "blue"), unsafe_allow_html=True)
+    c2.markdown(stat_card(sent, "WA Envoyés", "green"), unsafe_allow_html=True)
+    c3.markdown(stat_card(ok - sent, "En Attente", "orange"), unsafe_allow_html=True)
+    c4.markdown(stat_card(fail, "Sans WhatsApp", "red"), unsafe_allow_html=True)
+    c5.markdown(stat_card(f"{pct}%", "Taux Réussite", "blue"), unsafe_allow_html=True)
 
     if total:
         st.markdown(f"""
@@ -324,12 +392,26 @@ def page_dashboard():
       <div style="padding:11px;background:#f0fff4;border-radius:10px;border-left:4px solid #25D366">
         <strong>1. Importer</strong><br><span style="font-size:.84rem;color:#555">Chargez un CSV ou liez une Google Sheet</span></div>
       <div style="padding:11px;background:#f0f7ff;border-radius:10px;border-left:4px solid #3498db">
-        <strong>2. WhatsApp</strong><br><span style="font-size:.84rem;color:#555">Ouvrez WhatsApp, copiez-collez le message</span></div>
+        <strong>2. WhatsApp</strong><br><span style="font-size:.84rem;color:#555">Ouvrez WhatsApp avec message pré-rempli</span></div>
       <div style="padding:11px;background:#fff8f0;border-radius:10px;border-left:4px solid #f39c12">
-        <strong>3. Retargeting</strong><br><span style="font-size:.84rem;color:#555">Marquez les échecs → SMS ou appel</span></div>
+        <strong>3. Anti-ban</strong><br><span style="font-size:.84rem;color:#555">Timer aléatoire entre chaque contact</span></div>
       <div style="padding:11px;background:#fef0f0;border-radius:10px;border-left:4px solid #e74c3c">
-        <strong>4. SMS / Email</strong><br><span style="font-size:.84rem;color:#555">Relancez les contacts en échec</span></div>
+        <strong>4. Retargeting</strong><br><span style="font-size:.84rem;color:#555">Marquez les échecs → SMS ou appel</span></div>
     </div></div>""", unsafe_allow_html=True)
+
+    opts = []
+    if st.session_state.inverted:
+        opts.append("🔄 Traitement inversé")
+    if st.session_state.anti_ban:
+        opts.append(f"⏱️ Anti-ban ({st.session_state.anti_ban_intervals}s)")
+    if st.session_state.wa_prefill:
+        opts.append("📝 Message WA pré-rempli")
+    if opts:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### 🛠️ Options Actives")
+        for o in opts:
+            st.markdown(f"- {o}")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     if total:
         st.markdown('<div class="card"><div class="card-title">📋 Aperçu</div>', unsafe_allow_html=True)
@@ -360,6 +442,7 @@ def page_contacts():
                     df.columns = [c.strip() for c in df.columns]
                     st.session_state.df = df
                     st.session_state.failed = []
+                    st.session_state.sent_wa = []
                     st.session_state.col_map = detect_columns(df)
                     st.success(f"✅ **{len(df)} contacts** chargés !")
                 except Exception as e:
@@ -385,6 +468,7 @@ def page_contacts():
                     df.columns = [c.strip() for c in df.columns]
                     st.session_state.df = df
                     st.session_state.failed = []
+                    st.session_state.sent_wa = []
                     st.session_state.col_map = detect_columns(df)
                     st.success(f"✅ **{len(df)} contacts** chargés !")
                 except Exception as e:
@@ -408,15 +492,18 @@ def page_contacts():
 
     sc1, sc2 = st.columns([3, 1])
     search = sc1.text_input("🔍 Rechercher", key="_search", placeholder="Nom ou numéro…")
-    filt   = sc2.selectbox("Filtrer", ["Tous", "Actif", "Sans WhatsApp"], key="_filt")
+    filt   = sc2.selectbox("Filtrer", ["Tous", "Actif", "Envoyé", "Sans WhatsApp"], key="_filt")
 
     fidx = {c["index"] for c in st.session_state.failed}
+    sidx = set(st.session_state.sent_wa)
     view = df.copy()
     if search:
         mask = view.apply(lambda r: any(search.lower() in str(v).lower() for v in r), axis=1)
         view = view[mask]
     if filt == "Sans WhatsApp":
         view = view[view.index.isin(fidx)]
+    elif filt == "Envoyé":
+        view = view[view.index.isin(sidx)]
     elif filt == "Actif":
         view = view[~view.index.isin(fidx)]
 
@@ -427,11 +514,17 @@ def page_contacts():
         ncl  = clean_phone(num)
         email = get_email(row)
         is_f = idx in fidx
-        badge = '<span class="badge badge-failed">Sans WhatsApp</span>' if is_f \
-                else '<span class="badge badge-pending">Actif</span>'
+        is_s = idx in sidx
+
+        if is_f:
+            badge = '<span class="badge badge-failed">Sans WhatsApp</span>'
+        elif is_s:
+            badge = '<span class="badge badge-sent">Envoyé ✓</span>'
+        else:
+            badge = '<span class="badge badge-pending">En Attente</span>'
 
         st.markdown(f"""
-        <div class="crow {'failed' if is_f else ''}">
+        <div class="crow {'failed' if is_f else 'success' if is_s else ''}">
           <div style="flex:0 0 36px;text-align:center;font-weight:700;color:#888">{idx+1}</div>
           <div style="flex:1">
             <strong>{nom}</strong><br>
@@ -445,14 +538,18 @@ def page_contacts():
         a1, a2, a3, a4, a5 = st.columns(5)
 
         with a1:
-            wa_url = f"https://wa.me/{ncl}"
+            msg = st.session_state.wa_msg.replace("{nom}", nom).replace("{matricule}", mat)
+            wurl = wa_link(ncl, msg)
             st.markdown(
-                f'<a href="{wa_url}" target="_blank" rel="noopener" class="hbtn hbtn-wa">💬 WhatsApp</a>',
+                f'<a href="{wurl}" target="_blank" rel="noopener" class="hbtn hbtn-wa">💬 WhatsApp</a>',
                 unsafe_allow_html=True)
 
         with a2:
-            msg = st.session_state.wa_msg.replace("{nom}", nom).replace("{matricule}", mat)
-            st.markdown(copy_btn(msg, "📋 Copier msg", f"cp_{idx}"), unsafe_allow_html=True)
+            if not is_s and not is_f:
+                if st.button("✅ Envoyé", key=f"sent_{idx}"):
+                    if idx not in st.session_state.sent_wa:
+                        st.session_state.sent_wa.append(idx)
+                    st.rerun()
 
         with a3:
             if not is_f:
@@ -484,7 +581,7 @@ def page_contacts():
 def page_whatsapp():
     st.markdown("""<div class="hero" style="background:linear-gradient(135deg,#128C7E,#25D366)">
         <h1>💬 Module WhatsApp</h1>
-        <p>Semi-manuel · Aucun robot · Conforme aux conditions WhatsApp</p>
+        <p>Semi-manuel · Message pré-rempli · Anti-ban · Conforme WhatsApp</p>
     </div>""", unsafe_allow_html=True)
 
     df = st.session_state.df
@@ -510,13 +607,38 @@ def page_whatsapp():
         st.info(preview[:250] + ("…" if len(preview) > 250 else ""))
     st.markdown('</div>', unsafe_allow_html=True)
 
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("### ⚙️ Options de Campagne")
+    oc1, oc2, oc3 = st.columns(3)
+    with oc1:
+        st.markdown(f"🔄 **Traitement inversé** : {'✅ Oui' if st.session_state.inverted else '❌ Non'}")
+    with oc2:
+        st.markdown(f"⏱️ **Anti-ban** : {'✅ ' + str(st.session_state.anti_ban_intervals) + 's' if st.session_state.anti_ban else '❌ Désactivé'}")
+    with oc3:
+        st.markdown(f"📝 **Message pré-rempli** : {'✅ Activé' if st.session_state.wa_prefill else '❌ Désactivé'}")
+    st.markdown('</div>', unsafe_allow_html=True)
+
     fidx = {c["index"] for c in st.session_state.failed}
+    sidx = set(st.session_state.sent_wa)
     active = df[~df.index.isin(fidx)]
-    st.markdown(f"---\n### 📨 Contacts Actifs ({len(active)})")
+
+    if st.session_state.inverted:
+        active = active.iloc[::-1]
+        st.markdown(f"---\n### 📨 Contacts Actifs — Ordre Inversé ({len(active)})")
+        st.info("🔄 Mode inversé : traitement du dernier contact au premier")
+    else:
+        st.markdown(f"---\n### 📨 Contacts Actifs ({len(active)})")
 
     if active.empty:
         st.info("Tous les contacts sont marqués Sans WhatsApp.")
         return
+
+    pending = [idx for idx in active.index if idx not in sidx]
+    already_sent = [idx for idx in active.index if idx in sidx]
+
+    pc1, pc2 = st.columns(2)
+    pc1.markdown(stat_card(len(pending), "En Attente", "orange"), unsafe_allow_html=True)
+    pc2.markdown(stat_card(len(already_sent), "Déjà Envoyés", "green"), unsafe_allow_html=True)
 
     all_msgs = []
     for idx, row in active.iterrows():
@@ -532,25 +654,68 @@ def page_whatsapp():
         nom = val(row, "nom"); num = val(row, "numero"); mat = val(row, "matricule")
         ncl = clean_phone(num)
         msg = wa_msg.replace("{nom}", nom).replace("{matricule}", mat)
-        wa_url = f"https://wa.me/{ncl}"
+        wurl = wa_link(ncl, msg)
+        is_sent = idx in sidx
 
-        with st.expander(f"💬 {nom} — {num}"):
+        status_icon = "✅" if is_sent else "⏳"
+        with st.expander(f"{status_icon} 💬 {nom} — {num}"):
             ec1, ec2 = st.columns([2, 1])
             with ec1:
                 st.markdown("**Message à envoyer :**")
                 st.code(msg, language=None)
+                if st.session_state.wa_prefill:
+                    st.caption("📝 Le message sera pré-rempli dans WhatsApp automatiquement")
+                else:
+                    st.caption("📋 Copiez le message puis collez-le dans WhatsApp")
             with ec2:
                 st.markdown(
-                    f'<a href="{wa_url}" target="_blank" rel="noopener" class="hbtn hbtn-wa" '
+                    f'<a href="{wurl}" target="_blank" rel="noopener" class="hbtn hbtn-wa" '
                     f'style="display:block;text-align:center;padding:12px;margin-bottom:8px">'
-                    f'Ouvrir WhatsApp Web</a>', unsafe_allow_html=True)
+                    f'{"📤 Ouvrir WA (pré-rempli)" if st.session_state.wa_prefill else "📤 Ouvrir WhatsApp"}</a>',
+                    unsafe_allow_html=True)
                 st.markdown(copy_btn(msg, "📋 Copier le message", f"wap_{idx}"), unsafe_allow_html=True)
                 st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("⚠️ Marquer Sans WhatsApp", key=f"wa_fail_{idx}"):
-                    if not any(c["index"] == idx for c in st.session_state.failed):
-                        st.session_state.failed.append(
-                            {"index": idx, "nom": nom, "numero": num, "matricule": mat})
-                    st.rerun()
+
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if not is_sent:
+                        if st.button("✅ Envoyé", key=f"wa_sent_{idx}"):
+                            if idx not in st.session_state.sent_wa:
+                                st.session_state.sent_wa.append(idx)
+                            st.rerun()
+                with bc2:
+                    if st.button("⚠️ Sans WA", key=f"wa_fail_{idx}"):
+                        if not any(c["index"] == idx for c in st.session_state.failed):
+                            st.session_state.failed.append(
+                                {"index": idx, "nom": nom, "numero": num, "matricule": mat})
+                        if idx in st.session_state.sent_wa:
+                            st.session_state.sent_wa.remove(idx)
+                        st.rerun()
+
+    if st.session_state.anti_ban and pending:
+        st.markdown("---")
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### ⏱️ Timer Anti-Ban")
+        st.markdown("""<div style="font-size:.88rem;color:#555;margin-bottom:10px">
+        Attendez le temps indiqué entre chaque envoi WhatsApp pour éviter d'être bloqué.
+        Les intervalles sont aléatoires pour simuler un comportement humain.
+        </div>""", unsafe_allow_html=True)
+
+        if st.button("🎲 Générer un intervalle aléatoire", key="_gen_interval"):
+            interval = random_interval()
+            st.session_state["_current_interval"] = interval
+            st.session_state["_interval_start"] = time.time()
+
+        if "_current_interval" in st.session_state:
+            target = st.session_state["_current_interval"]
+            st.markdown(f"""
+            <div class="timer-box">
+                <div class="timer-num">{target}s</div>
+                <div class="timer-label">Attendez avant le prochain envoi</div>
+            </div>""", unsafe_allow_html=True)
+            st.info(f"⏱️ Attendez **{target} secondes** avant d'envoyer le message suivant.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ============================================================

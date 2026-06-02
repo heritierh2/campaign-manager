@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.env
+venv/
+.streamlit/secrets.toml
+chrome_whatsapp_profile/
+progress.json
+rapport_*.csv

@@ -1,96 +1,767 @@
+"""
+=============================================================
+  GESTIONNAIRE DE CAMPAGNE v5.0 — SEMI-MANUEL
+  Déploiement Render · Aucun st.secrets · Aucun Selenium
+  
+  Fonctionnalités :
+  - Import CSV / Google Sheets
+  - WhatsApp : ouvre wa.me avec message pré-rempli + copier-coller
+  - SMS : Google Messages Web
+  - Appels : lien tel:
+  - Email : SMTP Gmail/Outlook
+  - Retargeting : suivi des échecs
+  - Anti-ban : timer entre chaque envoi
+  - Ordre inversé : dernier contact → premier
+=============================================================
+"""
+
 import streamlit as st
 import pandas as pd
+import smtplib
+import re
+import base64
 import time
 import random
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+from datetime import datetime
+from urllib.parse import quote
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-# Configuration de l'interface
-st.set_page_config(page_title="Luxos RDC - Autosender", layout="wide")
-st.title("🚀 WHATSAPP AUTOSENDER v2.0 — Luxos RDC")
-
-# Chargement du fichier CSV (Zai utilise contacts_kcc_v3.csv)
-try:
-    df = pd.read_csv('contacts_kcc_v3.csv')
-    
-    # Ordre inversé : Commencer par le dernier contact (637) et remonter
-    df_inverse = df.iloc[::-1]
-    
-    # Limite Anti-ban : Prendre les 100 premiers de cette liste inversée
-    liste_campagne = df_inverse.head(100)
-    
-    st.success(f"✅ Fichier 'contacts_kcc_v3.csv' chargé ! {len(liste_campagne)} contacts prêts (Ordre inversé).")
-except FileNotFoundError:
-    st.error("❌ Erreur : Placez le fichier 'contacts_kcc_v3.csv' dans le dossier 'Campagne'.")
-    liste_campagne = None
-
-message_bureau = (
-    "Bonjour Monsieur/Madame, je suis Héritier Kalambayi, votre agent commercial au sein de "
-    "Luxos RDC. Je vous contacte pour vous informer que je suis désormais votre interlocuteur "
-    "privilégié au sein de l'entreprise. Pour votre projet immobilier..."
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+st.set_page_config(
+    page_title="Gestionnaire de Campagne",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.info(f"📋 **Message configuré :**\n\n{message_bureau}")
+# ============================================================
+# CSS
+# ============================================================
+STYLES = """
+<style>
+:root {
+    --wa:#25D366; --wa-dark:#128C7E;
+    --danger:#e74c3c; --info:#3498db;
+    --sms:#4285F4; --email:#EA4335;
+    --call:#27ae60; --timer:#f39c12;
+}
+.stApp{background:linear-gradient(135deg,#f5f7fa 0%,#e4edf5 100%);}
 
-if liste_campagne is not None:
-    if st.button("🚀 DÉMARRER LA CAMPAGNE AUTOMATIQUE", type="primary"):
-        st.warning("⚡ Ouverture de Google Chrome... Préparez-vous à scanner le QR Code.")
-        
-        # Configuration propre pour PC local (sans plantage)
-        options = webdriver.ChromeOptions()
-        options.add_argument("--start-maximized")
-        
-        # Utilisation de webdriver-manager pour éviter les erreurs de version de Chrome
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-        
-        # Étape cruciale : Ouvrir WhatsApp et attendre le scan
-        driver.get("https://web.whatsapp.com")
-        st.info("📲 En attente du scan du QR Code WhatsApp Business...")
-        
-        # Le script fait une vraie pause pour vous laisser scanner tranquillement
-        time.sleep(25) 
-        
-        barre = st.progress(0)
-        total = len(liste_campagne)
-        succes, echecs = 0, 0
-        
-        for index, row in liste_campagne.iterrows():
-            numero = str(row['telephone']).strip()
-            if not numero.startswith('+'):
-                numero = '+' + numero
-                
+.hero{background:linear-gradient(135deg,#128C7E 0%,#25D366 50%,#128C7E 100%);
+  padding:26px 34px;border-radius:16px;margin-bottom:22px;
+  box-shadow:0 4px 20px rgba(37,211,102,.25);color:#fff;text-align:center;}
+.hero.sms{background:linear-gradient(135deg,#2193b0,#6dd5ed);}
+.hero.em{background:linear-gradient(135deg,#EA4335,#fbbc05);}
+.hero.re{background:linear-gradient(135deg,#e74c3c,#c0392b);}
+.hero h1{margin:0;font-size:2.1rem;font-weight:800;}
+.hero p{margin:4px 0 0;font-size:.95rem;opacity:.9;}
+
+.card{background:#fff;border-radius:14px;padding:22px;
+  margin-bottom:18px;box-shadow:0 2px 12px rgba(0,0,0,.07);border:1px solid #e8ecf1;}
+
+.stat{color:#fff;padding:16px 20px;border-radius:12px;
+  text-align:center;box-shadow:0 3px 14px rgba(0,0,0,.18);}
+.stat.purple{background:linear-gradient(135deg,#667eea,#764ba2);}
+.stat.green{background:linear-gradient(135deg,#11998e,#38ef7d);}
+.stat.red{background:linear-gradient(135deg,#e74c3c,#c0392b);}
+.stat.blue{background:linear-gradient(135deg,#2193b0,#6dd5ed);}
+.stat.orange{background:linear-gradient(135deg,#f2994a,#f2c94c);}
+.stat-num{font-size:2rem;font-weight:800;}
+.stat-lbl{font-size:.82rem;opacity:.92;margin-top:2px;}
+
+.hbtn{color:#fff!important;border:none;padding:7px 14px;border-radius:8px;
+  cursor:pointer;font-weight:600;font-size:.82rem;text-decoration:none;
+  display:inline-flex;align-items:center;gap:5px;transition:all .2s;line-height:1.4;}
+.hbtn:hover{filter:brightness(.9);transform:translateY(-1px);}
+.hbtn-wa{background:var(--wa);}
+.hbtn-copy{background:var(--info);}
+.hbtn-sms{background:var(--sms);}
+.hbtn-call{background:var(--call);}
+.hbtn-email{background:var(--email);}
+
+.badge{padding:3px 11px;border-radius:20px;font-size:.76rem;font-weight:600;display:inline-block;}
+.badge-pending{background:#fef3cd;color:#856404;}
+.badge-failed{background:#f8d7da;color:#721c24;}
+.badge-sent{background:#d4edda;color:#155724;}
+
+.crow{background:#fff;border-radius:10px;padding:12px 16px;margin-bottom:8px;
+  border:1px solid #eef2f7;display:flex;align-items:center;gap:10px;transition:all .2s;}
+.crow:hover{box-shadow:0 2px 10px rgba(0,0,0,.07);border-color:#c8d6e5;}
+.crow.failed{background:#fff5f5;border-color:#ffcccc;}
+.crow.success{background:#f0fff4;border-color:#c6f6d5;}
+
+.prog-bar{background:#e0e0e0;border-radius:10px;height:10px;overflow:hidden;}
+.prog-fill{height:100%;border-radius:10px;transition:width .5s ease;}
+
+.timer-box{background:linear-gradient(135deg,#fff8e1,#fff3cd);
+  border:2px solid var(--timer);border-radius:12px;padding:16px;text-align:center;margin:10px 0;}
+.timer-num{font-size:2.4rem;font-weight:800;color:#e67e22;font-variant-numeric:tabular-nums;}
+.timer-label{font-size:.88rem;color:#7f6a2e;margin-top:4px;}
+
+.cnt{font-size:.85rem;padding:4px 0;font-weight:600;}
+.cnt.ok{color:#27ae60;}.cnt.warn{color:#f39c12;}.cnt.over{color:#e74c3c;}
+
+[data-testid="stSidebar"]{background:linear-gradient(180deg,#1a1a2e,#16213e);}
+[data-testid="stSidebar"] .stMarkdown{color:#e0e0e0;}
+</style>
+"""
+st.markdown(STYLES, unsafe_allow_html=True)
+
+
+# ============================================================
+# SESSION STATE — AUCUN st.secrets
+# ============================================================
+def _defaults():
+    return {
+        "df": pd.DataFrame(),
+        "failed": [],
+        "sent_wa": [],
+        "col_map": {},
+        "wa_msg": (
+            "Bonjour Monsieur/Madame, je suis Héritier Kalambayi, votre agent commercial au sein de Luxos RDC. "
+            "Je vous contacte pour vous informer que je suis désormais votre interlocuteur privilégié au sein de l'entreprise. "
+            "Pour votre projet immobilier actuellement en cours de Mahendeleo Yetu (signé pour KCC), c'est avec moi que vous pouvez interagir directement à mon numéro pour WhatsApp et appel +243977777737 . "
+            "N'hésitez pas à enregistrer mon numéro et à me contacter au besoin pour toute question ou préoccupation. "
+            "C'est un réel plaisir de vous accompagner ! "
+            "( Merci pour votre compréhension Si vous recevez ce message pour la seconde fois suite à la mise à jour de notre système de suivi, veuillez ne pas en tenir compte et tolérer)"
+        ),
+        "sms_msg": "Bonjour {nom}, offre spéciale ! Répondez vite.",
+        "smtp_server": "smtp.gmail.com",
+        "smtp_port": 587,
+        "smtp_user": "",
+        "smtp_pass": "",
+        "email_subject": "",
+        "email_body": "",
+        "inverted": True,
+        "wa_prefill": True,
+        "anti_ban": True,
+        "anti_ban_intervals": [20, 35, 50, 70],
+        "timer_value": 0,
+        "timer_running": False,
+    }
+
+for k, v in _defaults().items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+
+# ============================================================
+# UTILITAIRES
+# ============================================================
+def clean_phone(raw):
+    if pd.isna(raw):
+        return ""
+    s = re.sub(r"[\s\-\.\(\)]+", "", str(raw).strip())
+    if s.startswith("+"):
+        s = s[1:]
+    if s.startswith("0"):
+        s = "243" + s[1:]
+    return s
+
+def detect_columns(df):
+    mapping = {}
+    aliases = {
+        "nom": ["nom","name","noms","names","full_name","fullname","prenom","prénom"],
+        "numero": ["numéro","numero","number","phone","tel","telephone","téléphone","mobile","cell"],
+        "matricule": ["matricule","id","identifier","code","ref","reference","référence","matr"],
+        "email": ["email","e-mail","courriel","mail"],
+    }
+    for key, words in aliases.items():
+        for col in df.columns:
+            if col.strip().lower() in words:
+                mapping[key] = col
+                break
+    cols = list(df.columns)
+    if "nom" not in mapping and len(cols) >= 1: mapping["nom"] = cols[0]
+    if "numero" not in mapping and len(cols) >= 2: mapping["numero"] = cols[1]
+    if "matricule" not in mapping and len(cols) >= 3: mapping["matricule"] = cols[2]
+    if "email" not in mapping and len(cols) >= 4: mapping["email"] = cols[3]
+    return mapping
+
+def val(row, key):
+    col = st.session_state.col_map.get(key, "")
+    if not col:
+        return ""
+    v = str(row.get(col, "")).strip()
+    return "" if v.lower() == "nan" else v
+
+def get_email(row):
+    e = val(row, "email")
+    return e if e and "@" in e else None
+
+def _b64(text):
+    return base64.b64encode(text.encode("utf-8")).decode("utf-8")
+
+def copy_btn(text, label="📋 Copier", uid="c"):
+    b = _b64(text)
+    return f"""<button id="{uid}" class="hbtn hbtn-copy" onclick="
+(function(){{
+  var t=decodeURIComponent(escape(atob('{b}')));
+  navigator.clipboard.writeText(t).then(function(){{
+    var b=document.getElementById('{uid}');
+    var o=b.innerHTML; b.innerHTML='✓ Copié !'; b.style.background='#27ae60';
+    setTimeout(function(){{b.innerHTML=o;b.style.background='#3498db';}},1800);
+  }});
+}})();">{label}</button>"""
+
+def stat_card(n, label, cls="purple"):
+    return f'<div class="stat {cls}"><div class="stat-num">{n}</div><div class="stat-lbl">{label}</div></div>'
+
+def wa_link(ncl, msg=""):
+    if st.session_state.wa_prefill and msg:
+        return f"https://wa.me/{ncl}?text={quote(msg)}"
+    return f"https://wa.me/{ncl}"
+
+def random_interval():
+    intervals = st.session_state.anti_ban_intervals
+    return random.choice(intervals) if intervals else 0
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+def sidebar():
+    with st.sidebar:
+        st.markdown("""
+        <div style="text-align:center;padding:18px 0">
+            <div style="font-size:2.8rem">📊</div>
+            <h2 style="color:#25D366;margin:8px 0 2px">Campagne</h2>
+            <p style="color:#aaa;font-size:.82rem">Semi-Manuel · Sécurisé</p>
+        </div><hr style="border-color:#333">""", unsafe_allow_html=True)
+
+        page = st.radio("Navigation", [
+            "🏠 Tableau de bord", "📋 Contacts", "💬 WhatsApp",
+            "📱 SMS", "📧 E-mails", "⚠️ Retargeting",
+        ], label_visibility="collapsed", key="_nav")
+
+        _map = {
+            "🏠 Tableau de bord": "dash",
+            "📋 Contacts": "contacts",
+            "💬 WhatsApp": "whatsapp",
+            "📱 SMS": "sms",
+            "📧 E-mails": "email",
+            "⚠️ Retargeting": "retarget",
+        }
+        st.session_state["_page"] = _map.get(page, "dash")
+
+        st.markdown("<hr style='border-color:#333'>", unsafe_allow_html=True)
+        st.markdown("### 📂 Import Rapide")
+        up = st.file_uploader("CSV", type=["csv"], key="_side_up", label_visibility="collapsed")
+        if up is not None:
             try:
-                # Navigation vers le contact
-                url_contact = f"https://web.whatsapp.com/send?phone={numero}&text={message_bureau}"
-                driver.get(url_contact)
-                
-                # Attente du bouton envoyer de WhatsApp (max 30 secondes)
-                bouton_envoi = WebDriverWait(driver, 30).until(
-                    EC.element_to_be_clickable((By.XPATH, '//span[@data-icon="send"]'))
-                )
-                
-                # Délais anti-ban de Zai (Pause entre 20 et 70 secondes)
-                delai = random.randint(20, 70)
-                st.write(f"⏳ Traitement de {numero}... Pause de sécurité de {delai} secondes.")
-                time.sleep(delai)
-                
-                # Clic automatique
-                bouton_envoi.click()
-                succes += 1
-                st.success(f"➡️ Envoyé à : {numero}")
-                time.sleep(5)
-                
+                df = pd.read_csv(up)
+                df.columns = [c.strip() for c in df.columns]
+                st.session_state.df = df
+                st.session_state.failed = []
+                st.session_state.sent_wa = []
+                st.session_state.col_map = detect_columns(df)
+                st.success(f"✅ {len(df)} contacts chargés !")
+            except Exception as exc:
+                st.error(f"Erreur : {exc}")
+
+        st.markdown("<hr style='border-color:#333'>", unsafe_allow_html=True)
+        st.markdown("### ⚙️ Options")
+        inv = st.checkbox("🔄 Ordre inversé", value=st.session_state.inverted, key="_inv_opt")
+        st.session_state.inverted = inv
+        pf = st.checkbox("📝 Message WA pré-rempli", value=st.session_state.wa_prefill, key="_pf_opt")
+        st.session_state.wa_prefill = pf
+        ab = st.checkbox("⏱️ Anti-ban", value=st.session_state.anti_ban, key="_ab_opt")
+        st.session_state.anti_ban = ab
+        if ab:
+            iv = st.text_input("Intervalles (s)", value=",".join(str(x) for x in st.session_state.anti_ban_intervals),
+                               key="_iv_input", help="Ex: 20,35,50,70")
+            try:
+                st.session_state.anti_ban_intervals = [int(x.strip()) for x in iv.split(",") if x.strip()]
+            except ValueError:
+                st.warning("Format invalide")
+
+        st.markdown("<hr style='border-color:#333'>", unsafe_allow_html=True)
+        st.markdown("### 📊 État")
+        n = len(st.session_state.df)
+        f = len(st.session_state.failed)
+        s = len(st.session_state.sent_wa)
+        st.markdown(f"📋 Contacts : **{n}**")
+        st.markdown(f"✅ Envoyés : **{s}**")
+        st.markdown(f"⚠️ Échecs : **{f}**")
+
+sidebar()
+PAGE = st.session_state.get("_page", "dash")
+
+
+# ============================================================
+# PAGE : TABLEAU DE BORD
+# ============================================================
+def page_dashboard():
+    df = st.session_state.df
+    total = len(df)
+    fail = len(st.session_state.failed)
+    sent = len(st.session_state.sent_wa)
+    ok = total - fail if total else 0
+    pct = round(sent / total * 100, 1) if total else 0
+
+    st.markdown("""<div class="hero">
+        <h1>📊 Gestionnaire de Campagne</h1>
+        <p>Semi-manuel · Sécurisé · Conforme WhatsApp</p>
+    </div>""", unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(stat_card(total, "Total Contacts"), unsafe_allow_html=True)
+    c2.markdown(stat_card(sent, "Envoyés", "green"), unsafe_allow_html=True)
+    c3.markdown(stat_card(fail, "Sans WhatsApp", "red"), unsafe_allow_html=True)
+    c4.markdown(stat_card(f"{pct}%", "Taux Envoyé", "blue"), unsafe_allow_html=True)
+
+    if total:
+        st.markdown(f"""
+        <div style="margin:10px 0 20px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+            <span style="font-weight:600">Progression</span><span style="font-weight:600">{pct:.0f}%</span>
+          </div>
+          <div class="prog-bar">
+            <div class="prog-fill" style="width:{pct}%;background:linear-gradient(90deg,#25D366,#128C7E)"></div>
+          </div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("""<div class="card"><div class="card-title">🚀 Guide Rapide</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">
+      <div style="padding:14px;background:#f0fff4;border-radius:10px;border-left:4px solid #25D366">
+        <strong>1. Importer</strong><br><span style="font-size:.84rem;color:#555">Chargez votre CSV dans la barre latérale</span></div>
+      <div style="padding:14px;background:#f0f7ff;border-radius:10px;border-left:4px solid #3498db">
+        <strong>2. Ouvrir WhatsApp</strong><br><span style="font-size:.84rem;color:#555">Cliquez 💬 WhatsApp → le message est pré-rempli</span></div>
+      <div style="padding:14px;background:#fff8f0;border-radius:10px;border-left:4px solid #f39c12">
+        <strong>3. Envoyer manuellement</strong><br><span style="font-size:.84rem;color:#555">Appuyez Envoyer dans WhatsApp, puis ✅ Envoyé ici</span></div>
+      <div style="padding:14px;background:#fef0f0;border-radius:10px;border-left:4px solid #e74c3c">
+        <strong>4. Retargeting</strong><br><span style="font-size:.84rem;color:#555">Marquez ❌ Sans WA → relancez par SMS/Appel</span></div>
+    </div></div>""", unsafe_allow_html=True)
+
+    if total:
+        st.markdown('<div class="card"><div class="card-title">📋 Aperçu</div>', unsafe_allow_html=True)
+        st.dataframe(df.head(10), use_container_width=True, height=280)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ============================================================
+# PAGE : CONTACTS
+# ============================================================
+def page_contacts():
+    st.markdown("""<div class="hero" style="padding:20px 28px">
+        <h1>📋 Contacts</h1><p>Importez et gérez votre liste</p>
+    </div>""", unsafe_allow_html=True)
+
+    ci1, ci2 = st.columns([2, 1])
+    with ci1:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### 📂 Importer")
+        up = st.file_uploader("CSV", type=["csv"], key="_csv_main")
+        if up:
+            try:
+                df = pd.read_csv(up)
+                df.columns = [c.strip() for c in df.columns]
+                st.session_state.df = df
+                st.session_state.failed = []
+                st.session_state.sent_wa = []
+                st.session_state.col_map = detect_columns(df)
+                st.success(f"✅ **{len(df)} contacts** chargés !")
             except Exception as e:
-                echecs += 1
-                st.error(f"⚠️ Erreur ou pas de compte WhatsApp pour {numero}")
-            
-            # Mise à jour de la barre
-            barre.progress((succes + echecs) / total)
-            
-        driver.quit()
-        st.balloons()
-        st.success(f"🏁 Campagne finie ! {succes} envoyés, {echecs} échecs.")
+                st.error(f"❌ {e}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    with ci2:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### 🔗 Google Sheets")
+        surl = st.text_input("URL CSV", key="_sheet_url", placeholder="https://docs.google.com/.../pub?output=csv")
+        if st.button("📥 Charger", key="_load_sheet"):
+            if surl:
+                try:
+                    df = pd.read_csv(surl)
+                    df.columns = [c.strip() for c in df.columns]
+                    st.session_state.df = df
+                    st.session_state.failed = []
+                    st.session_state.sent_wa = []
+                    st.session_state.col_map = detect_columns(df)
+                    st.success(f"✅ **{len(df)} contacts** !")
+                except Exception as e:
+                    st.error(f"❌ {e}")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    df = st.session_state.df
+    if df.empty:
+        st.info("📭 Importez un CSV pour commencer.")
+        return
+
+    cm = st.session_state.col_map
+    fidx = {c["index"] for c in st.session_state.failed}
+    sidx = set(st.session_state.sent_wa)
+
+    sc1, sc2 = st.columns([3, 1])
+    search = sc1.text_input("🔍 Rechercher", key="_search")
+    filt = sc2.selectbox("Filtrer", ["Tous", "En Attente", "Envoyé", "Sans WhatsApp"], key="_filt")
+
+    view = df.copy()
+    if search:
+        mask = view.apply(lambda r: any(search.lower() in str(v).lower() for v in r), axis=1)
+        view = view[mask]
+    if filt == "Sans WhatsApp":
+        view = view[view.index.isin(fidx)]
+    elif filt == "Envoyé":
+        view = view[view.index.isin(sidx)]
+    elif filt == "En Attente":
+        view = view[~view.index.isin(fidx) & ~view.index.isin(sidx)]
+
+    st.markdown(f"### 📊 {len(view)} contacts")
+    for idx, row in view.iterrows():
+        nom = val(row, "nom"); num = val(row, "numero"); mat = val(row, "matricule")
+        ncl = clean_phone(num); email = get_email(row)
+        is_f = idx in fidx; is_s = idx in sidx
+
+        badge = '<span class="badge badge-failed">Sans WA</span>' if is_f else \
+                '<span class="badge badge-sent">Envoyé ✓</span>' if is_s else \
+                '<span class="badge badge-pending">En Attente</span>'
+
+        st.markdown(f"""
+        <div class="crow {'failed' if is_f else 'success' if is_s else ''}">
+          <div style="flex:0 0 36px;text-align:center;font-weight:700;color:#888">{idx+1}</div>
+          <div style="flex:1"><strong>{nom}</strong><br>
+            <span style="font-size:.84rem;color:#666">{num}</span>
+            {f' · <span style="font-size:.82rem;color:#888">{mat}</span>' if mat else ''}
+            {f' · <span style="font-size:.82rem;color:#888">{email}</span>' if email else ''}
+          </div><div>{badge}</div>
+        </div>""", unsafe_allow_html=True)
+
+        a1, a2, a3, a4 = st.columns(4)
+        with a1:
+            msg = st.session_state.wa_msg.replace("{nom}", nom).replace("{matricule}", mat)
+            wurl = wa_link(ncl, msg)
+            st.markdown(f'<a href="{wurl}" target="_blank" rel="noopener" class="hbtn hbtn-wa">💬 WhatsApp</a>', unsafe_allow_html=True)
+        with a2:
+            if not is_s and not is_f:
+                if st.button("✅ Envoyé", key=f"sent_{idx}"):
+                    if idx not in st.session_state.sent_wa:
+                        st.session_state.sent_wa.append(idx)
+                    st.rerun()
+        with a3:
+            if not is_f:
+                if st.button("❌ Sans WA", key=f"fail_{idx}"):
+                    if not any(c["index"] == idx for c in st.session_state.failed):
+                        st.session_state.failed.append({"index": idx, "nom": nom, "numero": num, "matricule": mat})
+                    st.rerun()
+            else:
+                if st.button("✅ Restaurer", key=f"rest_{idx}"):
+                    st.session_state.failed = [c for c in st.session_state.failed if c["index"] != idx]
+                    st.rerun()
+        with a4:
+            st.markdown(f'<a href="tel:{num}" class="hbtn hbtn-call">📞 Appeler</a>', unsafe_allow_html=True)
+
+
+# ============================================================
+# PAGE : WHATSAPP
+# ============================================================
+def page_whatsapp():
+    st.markdown("""<div class="hero">
+        <h1>💬 Module WhatsApp</h1>
+        <p>Semi-manuel · Message pré-rempli · Anti-ban</p>
+    </div>""", unsafe_allow_html=True)
+
+    df = st.session_state.df
+    if df.empty:
+        st.warning("⚠️ Chargez vos contacts d'abord.")
+        return
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("### ✍️ Message")
+    st.markdown("Variables : **{nom}** · **{matricule}**")
+    m1, m2 = st.columns([3, 1])
+    with m1:
+        wa_msg = st.text_area("Votre message :", value=st.session_state.wa_msg, height=180, key="_wa_msg")
+        st.session_state.wa_msg = wa_msg
+    with m2:
+        preview = wa_msg.replace("{nom}", "Jean Dupont").replace("{matricule}", "MAT001")
+        st.markdown("**Aperçu :**")
+        st.info(preview[:300] + ("…" if len(preview) > 300 else ""))
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    fidx = {c["index"] for c in st.session_state.failed}
+    sidx = set(st.session_state.sent_wa)
+    active = df[~df.index.isin(fidx)].copy()
+
+    if st.session_state.inverted:
+        active = active.iloc[::-1]
+
+    st.markdown(f"### 📨 Contacts Actifs ({len(active)})")
+
+    if active.empty:
+        st.info("Tous les contacts sont marqués Sans WhatsApp.")
+        return
+
+    pending = [idx for idx in active.index if idx not in sidx]
+    already = [idx for idx in active.index if idx in sidx]
+
+    pc1, pc2 = st.columns(2)
+    pc1.markdown(stat_card(len(pending), "En Attente", "orange"), unsafe_allow_html=True)
+    pc2.markdown(stat_card(len(already), "Déjà Envoyés", "green"), unsafe_allow_html=True)
+
+    if st.session_state.anti_ban:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### ⏱️ Timer Anti-Ban")
+        st.markdown("""<div style="font-size:.88rem;color:#555;margin-bottom:10px">
+        Après chaque envoi, attendez le temps indiqué avant de contacter le suivant.
+        Cliquez le bouton pour tirer un délai aléatoire.
+        </div>""", unsafe_allow_html=True)
+        if st.button("🎲 Tirer un délai aléatoire", key="_gen_interval"):
+            interval = random_interval()
+            st.session_state.timer_value = interval
+        if st.session_state.timer_value > 0:
+            st.markdown(f"""
+            <div class="timer-box">
+                <div class="timer-num">{st.session_state.timer_value}s</div>
+                <div class="timer-label">Attendez avant le prochain envoi</div>
+            </div>""", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    for idx, row in active.iterrows():
+        nom = val(row, "nom"); num = val(row, "numero"); mat = val(row, "matricule")
+        ncl = clean_phone(num)
+        msg = wa_msg.replace("{nom}", nom).replace("{matricule}", mat)
+        wurl = wa_link(ncl, msg)
+        is_sent = idx in sidx
+
+        icon = "✅" if is_sent else "⏳"
+        with st.expander(f"{icon} 💬 {nom} — {num}"):
+            ec1, ec2 = st.columns([2, 1])
+            with ec1:
+                st.markdown("**Message :**")
+                st.code(msg, language=None)
+                if st.session_state.wa_prefill:
+                    st.caption("📝 Le message sera pré-rempli dans WhatsApp")
+                else:
+                    st.caption("📋 Copiez le message puis collez-le dans WhatsApp")
+            with ec2:
+                st.markdown(
+                    f'<a href="{wurl}" target="_blank" rel="noopener" class="hbtn hbtn-wa" '
+                    f'style="display:block;text-align:center;padding:12px;margin-bottom:8px">'
+                    f'{"📤 Ouvrir WA (pré-rempli)" if st.session_state.wa_prefill else "📤 Ouvrir WhatsApp"}</a>',
+                    unsafe_allow_html=True)
+                st.markdown(copy_btn(msg, "📋 Copier le message", f"wap_{idx}"), unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if not is_sent:
+                        if st.button("✅ Envoyé", key=f"wa_sent_{idx}"):
+                            if idx not in st.session_state.sent_wa:
+                                st.session_state.sent_wa.append(idx)
+                            st.rerun()
+                with bc2:
+                    if st.button("❌ Sans WA", key=f"wa_fail_{idx}"):
+                        if not any(c["index"] == idx for c in st.session_state.failed):
+                            st.session_state.failed.append({"index": idx, "nom": nom, "numero": num, "matricule": mat})
+                        if idx in st.session_state.sent_wa:
+                            st.session_state.sent_wa.remove(idx)
+                        st.rerun()
+
+
+# ============================================================
+# PAGE : SMS
+# ============================================================
+def page_sms():
+    st.markdown("""<div class="hero sms">
+        <h1>📱 Module SMS</h1><p>Via Google Messages Web</p>
+    </div>""", unsafe_allow_html=True)
+
+    df = st.session_state.df
+    if df.empty:
+        st.warning("⚠️ Chargez vos contacts.")
+        return
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("### ✍️ Message SMS")
+    sms = st.text_area("Message :", value=st.session_state.sms_msg, height=90, key="_sms_msg", max_chars=300)
+    st.session_state.sms_msg = sms
+    nchar = len(sms); segs = max(1, (nchar + 159) // 160)
+    css = "ok" if nchar <= 160 else ("warn" if nchar <= 320 else "over")
+    st.markdown(f'<div class="cnt {css}">{nchar}/160 · {segs} segment(s)</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    failed = st.session_state.failed
+    st.markdown(f"### 📨 Sans WhatsApp ({len(failed)})")
+    if not failed:
+        st.info("Aucun contact en échec.")
+        return
+
+    for c in failed:
+        nom = c["nom"]; num = c["numero"]; mat = c.get("matricule", "")
+        msg = sms.replace("{nom}", nom).replace("{matricule}", mat)
+        with st.expander(f"📱 {nom} — {num}"):
+            st.code(msg)
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                st.markdown('<a href="https://messages.google.com/web/" target="_blank" class="hbtn hbtn-sms">📱 Google Messages</a>', unsafe_allow_html=True)
+            with sc2:
+                st.markdown(f'<a href="tel:{num}" class="hbtn hbtn-call">📞 Appeler</a>', unsafe_allow_html=True)
+            st.markdown(copy_btn(msg, "📋 Copier SMS", f"sm_{c['index']}"), unsafe_allow_html=True)
+
+
+# ============================================================
+# PAGE : EMAIL
+# ============================================================
+def page_email():
+    st.markdown("""<div class="hero em">
+        <h1>📧 Campagnes E-mail</h1><p>Envoi via SMTP</p>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("### ⚙️ SMTP")
+    s1, s2 = st.columns(2)
+    with s1:
+        srv = st.text_input("Serveur", value=st.session_state.smtp_server, key="_smtp_srv")
+        port = st.number_input("Port", value=st.session_state.smtp_port, min_value=1, max_value=65535, key="_smtp_port")
+    with s2:
+        user = st.text_input("E-mail", value=st.session_state.smtp_user, key="_smtp_user")
+        pwd = st.text_input("Mot de passe app", type="password", value=st.session_state.smtp_pass, key="_smtp_pwd")
+    if st.button("💾 Sauvegarder SMTP", key="_save_smtp"):
+        st.session_state.smtp_server = srv
+        st.session_state.smtp_port = int(port)
+        st.session_state.smtp_user = user
+        st.session_state.smtp_pass = pwd
+        st.success("✅ Sauvegardé !")
+    st.markdown("""<div style="background:#fff8e1;padding:12px;border-radius:10px;margin-top:10px;font-size:.86rem;border-left:4px solid #fbbc05">
+    <strong>💡 Gmail :</strong> Utilisez un mot de passe d'application.<br>
+    <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a>
+    </div>""", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("### ✍️ Rédiger")
+    subj = st.text_input("Objet :", value=st.session_state.email_subject, key="_em_subj")
+    body = st.text_area("Corps :", value=st.session_state.email_body, height=180, key="_em_body")
+    st.session_state.email_subject = subj
+    st.session_state.email_body = body
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    df = st.session_state.df
+    cm = st.session_state.col_map
+    email_col = cm.get("email")
+    if df.empty:
+        st.warning("⚠️ Chargez vos contacts.")
+        return
+    if not email_col:
+        for col in df.columns:
+            if col.strip().lower() in ["email", "e-mail", "courriel", "mail"]:
+                email_col = col; cm["email"] = col; break
+    if not email_col:
+        st.error("❌ Aucune colonne Email.")
+        return
+
+    valid = [str(v).strip() for v in df[email_col].dropna() if "@" in str(v)]
+    targets = st.multiselect("Destinataires :", options=valid, default=valid, key="_em_tgt")
+
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        if st.button("📤 Envoyer à tous", key="_em_send", type="primary"):
+            if not user or not pwd:
+                st.error("❌ Configurez SMTP.")
+            elif not subj or not body:
+                st.error("❌ Objet et corps requis.")
+            elif not targets:
+                st.error("❌ Aucun destinataire.")
+            else:
+                prog = st.progress(0, text="Envoi..."); sent = 0; errs = []
+                for i, rcpt in enumerate(targets):
+                    try:
+                        m = MIMEMultipart()
+                        m["From"] = user; m["To"] = rcpt; m["Subject"] = subj
+                        m.attach(MIMEText(body, "plain", "utf-8"))
+                        with smtplib.SMTP(srv, int(port)) as server:
+                            server.starttls(); server.login(user, pwd); server.sendmail(user, rcpt, m.as_string())
+                        sent += 1
+                    except Exception as exc:
+                        errs.append((rcpt, str(exc)))
+                    prog.progress((i+1)/len(targets))
+                if sent: st.success(f"✅ {sent} envoyé(s) !")
+                if errs: st.error(f"❌ {len(errs)} échec(s)")
+    with bc2:
+        if st.button("🧪 Test", key="_em_test"):
+            if not user or not pwd:
+                st.error("❌ Configurez SMTP.")
+            else:
+                try:
+                    m = MIMEMultipart()
+                    m["From"] = user; m["To"] = user; m["Subject"] = "[TEST]"
+                    m.attach(MIMEText("Test", "plain", "utf-8"))
+                    with smtplib.SMTP(srv, int(port)) as server:
+                        server.starttls(); server.login(user, pwd); server.sendmail(user, user, m.as_string())
+                    st.success("✅ Test envoyé !")
+                except Exception as exc:
+                    st.error(f"❌ {exc}")
+
+
+# ============================================================
+# PAGE : RETARGETING
+# ============================================================
+def page_retarget():
+    st.markdown("""<div class="hero re">
+        <h1>⚠️ Retargeting</h1><p>Sans WhatsApp → SMS, appel, e-mail</p>
+    </div>""", unsafe_allow_html=True)
+
+    failed = st.session_state.failed
+    if not failed:
+        st.markdown("""<div style="text-align:center;padding:50px;color:#888">
+            <div style="font-size:3.5rem">🎉</div>
+            <h3>Aucun contact en échec</h3></div>""", unsafe_allow_html=True)
+        return
+
+    t1, t2, t3 = st.columns(3)
+    t1.markdown(stat_card(len(failed), "Sans WhatsApp", "red"), unsafe_allow_html=True)
+    t2.markdown(stat_card(len(st.session_state.sent_wa), "Envoyés WA", "green"), unsafe_allow_html=True)
+    t3.markdown(stat_card(len(failed), "SMS / Appel", "blue"), unsafe_allow_html=True)
+
+    st.markdown("### 📋 Liste")
+    fdf = pd.DataFrame([{"Nom": c["nom"], "Numéro": c["numero"],
+                         "Matricule": c.get("matricule", "")} for c in failed])
+    st.dataframe(fdf, use_container_width=True, hide_index=True)
+
+    csv_b64 = base64.b64encode(fdf.to_csv(index=False).encode()).decode()
+    st.markdown(f'<a href="data:file/csv;base64,{csv_b64}" download="contacts_echec.csv" '
+               f'style="display:inline-block;background:#27ae60;color:#fff;padding:10px 22px;'
+               f'border-radius:8px;text-decoration:none;font-weight:600">💾 Exporter CSV</a>',
+               unsafe_allow_html=True)
+
+    st.markdown("---")
+    r1, r2 = st.columns(2)
+    with r1:
+        st.markdown("#### 📱 SMS en masse")
+        all_sms = []
+        for c in failed:
+            m = st.session_state.sms_msg.replace("{nom}", c["nom"]).replace("{matricule}", c.get("matricule", ""))
+            all_sms.append(f"--- {c['nom']} ({c['numero']}) ---\n{m}")
+        st.markdown(copy_btn("\n\n".join(all_sms), "📋 Copier tous les SMS", "ret_sms"), unsafe_allow_html=True)
+        st.markdown('<a href="https://messages.google.com/web/" target="_blank" class="hbtn hbtn-sms">📱 Google Messages</a>', unsafe_allow_html=True)
+    with r2:
+        st.markdown("#### 📞 Appels")
+        for c in failed[:5]:
+            st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0">'
+                       f'<span>{c["nom"]} — {c["numero"]}</span>'
+                       f'<a href="tel:{c["numero"]}" class="hbtn hbtn-call" style="padding:4px 10px">📞</a></div>',
+                       unsafe_allow_html=True)
+        if len(failed) > 5:
+            st.info(f"… et {len(failed)-5} autres")
+
+    st.markdown("---")
+    if st.button("🗑️ Vider les échecs", key="_clear_fail"):
+        st.session_state.failed = []
+        st.rerun()
+
+
+# ============================================================
+# ROUTEUR
+# ============================================================
+PAGES = {
+    "dash": page_dashboard,
+    "contacts": page_contacts,
+    "whatsapp": page_whatsapp,
+    "sms": page_sms,
+    "email": page_email,
+    "retarget": page_retarget,
+}
+
+PAGES.get(PAGE, page_dashboard)()
